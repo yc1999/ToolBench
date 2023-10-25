@@ -1,16 +1,45 @@
 """
-Data preprocessing
+Utils for tooleval.
 """
-import argparse
-import json
-import os
 from evaluation import ExecutionGraph,ExecutionNode
 import random
 random.seed(42)
-parser = argparse.ArgumentParser()
-parser.add_argument('--answer_dir',type=str, required=True,help='where the answers stored.')
-parser.add_argument('--method',type=str,required=True,help='the name of the method.')
-parser.add_argument('--output', type=str, default="converted_answers.json", required=False, help='output path for the converted answer.')
+from evaluators.registered_cls.rtl import AnswerStatus, TaskStatus
+
+task_status_mapping = {
+    "TaskStatus.Solvable": TaskStatus.Solvable,
+    "TaskStatus.Unsolvable": TaskStatus.Unsolvable,
+    "TaskStatus.Unsure": TaskStatus.Unsure
+}
+answer_status_mapping = {
+    "AnswerStatus.Solved": AnswerStatus.Solved,
+    "AnswerStatus.Unsolved": AnswerStatus.Unsolved,
+    "AnswerStatus.Unsure": AnswerStatus.Unsure
+}
+test_sets = ["G1_instruction", "G1_category", "G1_tool", "G2_instruction", "G2_category", "G3_instruction"]
+
+def get_steps(example):
+    answer_details = example["answer"]["answer_details"][0]
+    answer_steps = []
+    step_cnt = 1
+    final_step = ""
+
+    while "next" in answer_details:
+        answer_str = answer_details["message"]
+        role_str = answer_details["role"]
+
+        if answer_str and role_str == "tool":
+            step_text = f"Step {step_cnt}: {answer_str}"
+            answer_steps.append(step_text)
+            final_step = f"Final step: {answer_str}"
+            step_cnt += 1
+
+        if not answer_details["next"]:
+            break
+
+        answer_details = answer_details["next"][0]
+
+    return "\n".join(answer_steps), final_step
 
 
 def generate_init_message_node(eg:ExecutionGraph,functions,query):
@@ -21,8 +50,6 @@ def generate_init_message_node(eg:ExecutionGraph,functions,query):
     eg.add_node(node)
     eg[init_node,node] = None
     return node
-
-
 
 def process_valid_data(method,answer_generation):
     conversation = answer_generation['train_messages'][-1]
@@ -50,7 +77,6 @@ def process_valid_data(method,answer_generation):
                 node = ExecutionNode(role='assistant',
                                         message=message['content'])
                 
-            
         else:
             raise NotImplementedError(f'Unkown role {role}')
         
@@ -71,16 +97,15 @@ def process_valid_data(method,answer_generation):
             'answer_details': eg.convert_to_dict()
         }
     }
+
 def process_invalid_data(method,data_dict):
     answer_generation = data_dict['answer_generation']
     functions = answer_generation['function']
     query = answer_generation['query']
     eg = ExecutionGraph()
     last_node = generate_init_message_node(eg,functions,query)
-    if 'CoT' in method or 'cot' in method:
+    if 'CoT' in method:
         trail = random.choice(data_dict["trys"])
-
-        
         index = 0
         while index < len(trail['chain']):
             message = trail['chain'][index]
@@ -103,7 +128,7 @@ def process_invalid_data(method,data_dict):
             last_node = node
         eg = eg.reduce_graph_to_sequence()
    
-    elif 'DFS' in method or 'dfs' in method:
+    elif 'DFS' in method:
 
         def DFS(root):
             if len(root['children']) == 0:
@@ -171,22 +196,3 @@ def process_invalid_data(method,data_dict):
             'answer_details': eg.convert_to_dict()
         }
     }
-             
-                    
-                    
-if __name__=='__main__':
-    args = parser.parse_args()
-    answer_dir = args.answer_dir
-    method = args.method
-    output = args.output
-    answer_dict = {}
-    for filename in os.listdir(answer_dir):
-        if filename.endswith('.json') and method in filename:
-            qid = filename.split('_')[0]
-            data_dict = json.load(open(os.path.join(answer_dir,filename)))
-            if not data_dict['answer_generation']['valid_data']:
-                answer_dict[qid] = process_invalid_data(method,data_dict)
-            else:
-                answer_dict[qid] = process_valid_data(method,data_dict['answer_generation'])
-                
-    json.dump(answer_dict,open(output,'w'))
