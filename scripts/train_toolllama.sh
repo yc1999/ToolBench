@@ -1,8 +1,13 @@
 export PYTHONPATH=./
 export CUDA_VISIBLE_DEVICES=4,5
 
+<<<<<<< HEAD
 torchrun --nproc_per_node=2 --master_port=20001 toolbench/train/train_long_seq.py \
     --model_name_or_path /data/users/zhangjunlei/yangc/project/data/FastChat/save/weights/huggyllama/llama-7b  \
+=======
+torchrun --nproc_per_node=2 --master_port=20001 toolbench/train/train_mem.py \
+    --model_name_or_path huggyllama/llama-7b  \
+>>>>>>> 05896ad539eee01e425e6fbd42682960a04f26d5
     --data_path  data/toolllama_G123_dfs_train.json \
     --eval_data_path  data/toolllama_G123_dfs_eval.json \
     --conv_template tool-llama-single-round \
@@ -24,6 +29,7 @@ torchrun --nproc_per_node=2 --master_port=20001 toolbench/train/train_long_seq.p
     --fsdp "full_shard auto_wrap" \
     --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer' \
     --tf32 True \
+    --source_model_max_length 2048 \
     --model_max_length 8192 \
     --gradient_checkpointing True \
     --lazy_preprocess True \

@@ -51,7 +51,6 @@ def contain(candidate_list, white_list):
     return output
 
 
-
 # rapidapi env wrapper
 class rapidapi_wrapper(base_env):
     def __init__(self, query_json, tool_descriptions, retriever, args, process_id=0):
@@ -61,6 +60,7 @@ class rapidapi_wrapper(base_env):
         self.toolbench_key = args.toolbench_key
         self.rapidapi_key = args.rapidapi_key
         self.use_rapidapi_key = args.use_rapidapi_key
+        self.api_customization = args.api_customization
         self.service_url = "http://8.218.239.54:8080/rapidapi"
         self.max_observation_length = args.max_observation_length
         self.observ_compress_method = args.observ_compress_method
@@ -326,7 +326,7 @@ You have access of the following tools:\n'''
                 self.success = 1 # succesfully return final_answer
                 return "{\"response\":\"successfully giving the final answer.\"}", 3
             else:
-                "{error:\"\"return_type\" is not a valid choice\"}", 2
+                return "{error:\"\"return_type\" is not a valid choice\"}", 2
         else:
 
             for k, function in enumerate(self.functions):
@@ -342,9 +342,9 @@ You have access of the following tools:\n'''
                     }
                     if self.process_id == 0:
                         print(colored(f"query to {self.cate_names[k]}-->{self.tool_names[k]}-->{action_name}",color="yellow"))
-                    if self.use_rapidapi_key:
+                    if self.use_rapidapi_key or self.api_customization:
                         payload["rapidapi_key"] = self.rapidapi_key
-                        response = get_rapidapi_response(payload)
+                        response = get_rapidapi_response(payload, api_customization=self.api_customization)
                     else:
                         time.sleep(2) # rate limit: 30 per minute
                         headers = {"toolbench_key": self.toolbench_key}
@@ -401,11 +401,12 @@ class pipeline_runner:
         args = self.args
         if args.backbone_model == "toolllama":
             # ratio = 4 means the sequence length is expanded by 4, remember to change the model_max_length to 8192 (2048 * ratio) for ratio = 4
-            replace_llama_with_condense(ratio=4)
+            ratio = int(args.max_sequence_length/args.max_source_sequence_length)
+            replace_llama_with_condense(ratio=ratio)
             if args.lora:
-                backbone_model = ToolLLaMALoRA(base_name_or_path=args.model_path, model_name_or_path=args.lora_path)
+                backbone_model = ToolLLaMALoRA(base_name_or_path=args.model_path, model_name_or_path=args.lora_path, max_sequence_length=args.max_sequence_length)
             else:
-                backbone_model = ToolLLaMA(model_name_or_path=args.model_path)
+                backbone_model = ToolLLaMA(model_name_or_path=args.model_path, max_sequence_length=args.max_sequence_length)
         else:
             backbone_model = args.backbone_model
         return backbone_model

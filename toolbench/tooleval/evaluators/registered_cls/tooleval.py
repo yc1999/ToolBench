@@ -1,37 +1,15 @@
-import os
-import yaml
 from copy import deepcopy
 import json
 import re
 import random
 import math
 
-from .base import BaseEvaluator
+
+from .base import ToolEvalEvaluator
 from typing import List, Union, Dict, Any, Callable
 from .utils import register_evaluator,OpenaiPoolRequest
 
-@register_evaluator
-class ToolEvalEvaluator(BaseEvaluator):
-    """ToolEval common evaluator class.
-    
-    Attributes:
-    ----------
-        cfg_path : str
-            A path store the configuration of the evaluator.  
-
-        
-    """
-    def __init__(self,
-                 cfg_path: str = None,
-                ):
-        eval_config = yaml.load(open(os.path.join(cfg_path,'config.yaml')),Loader=yaml.FullLoader)
-        template = open(os.path.join(cfg_path,eval_config['prompt_template'])).read()
-        
-        super().__init__(
-            fn_completions=getattr(self,eval_config['fn_completions'])
-            )
-        self.eval_config = eval_config
-        self.template = template
+from tenacity import retry, stop_after_attempt
 
 
 @register_evaluator
@@ -83,22 +61,51 @@ class OpenAINormalizedEvaluator(ToolEvalEvaluator):
             name = re.findall(r"<name>(.*?)</name>",function,re.DOTALL)[0]
             description = re.findall(r"<description>(.*?)</description>",function,re.DOTALL)[0]
             self.parsed_function_templates[name] = description
-        
-    def call_openai_completions_with_function_call(self,function_call,format_str:Dict):
-        completion_kwargs = deepcopy(self.eval_config['completions_kwargs'])
-        completion_kwargs['function_call'] = {'name':function_call}
+            
+        self.functions = {}
         for function in self.eval_config['completions_kwargs']['functions']:
-            if function['name']==function_call:
-                completion_kwargs['functions'] = [function]
-                break
+            self.functions[function['name']] = function
+    
+    @retry(stop=stop_after_attempt(3),reraise=True)
+    def function_call(self,
+                      func_name,
+                      func_args:Dict,
+                      *,
+                      return_reason=False,
+                      return_content=False):
+        completion_kwargs = deepcopy(self.eval_config['completions_kwargs'])
+        func_description = deepcopy(self.functions[func_name])
+        
+        if return_reason:
+            func_description['parameters']['required'].append('reason')
+            func_description['parameters']['properties']['reason'] = {
+                'type':'string',
+                'description':'explain your answer.'
+            }
+        
+        completion_kwargs['function_call'] = {'name':func_name}
+        completion_kwargs['functions'] = [func_description]
+
         completion_kwargs['messages'] = [{
             'role':'user',
-            'content':str(self.parsed_function_templates[function_call]).format(**format_str)
+            'content':str(self.parsed_function_templates[func_name]).format(**func_args)
         }]
+                    
         res = self.opr.request(**completion_kwargs)
-        return json.loads(res.choices[0].message.function_call.arguments)
+        ret = json.loads(res.choices[0].message.function_call.arguments)
+        
+        # check required items
+        required_args = getattr(func_description['parameters'],'required',None)
+        if required_args is not None:
+            ret_args = set(ret.keys())
+            for arg in required_args:
+                if arg not in ret_args:
+                    raise KeyError(f"Arg {arg} not found in reply!")
+        
+        if return_content:
+            ret['content'] = dict(res.choices[0].message).get('content','')
+        return ret
     
-
     def select_best_final_answer(self,query,final_answers:List[str])->int:
         hashed_ans = list(map(hash,final_answers))
         all_same = True
@@ -108,18 +115,18 @@ class OpenAINormalizedEvaluator(ToolEvalEvaluator):
         if all_same:
             return random.choice(range(len(final_answers)))
         while True:
-            selected = int(self.call_openai_completions_with_function_call('select_best_final_answer',{'query':query,'final_answers':final_answers})['best_answer_index'])
+            selected = int(self.function_call('select_best_final_answer',{'query':query,'final_answers':final_answers})['best_answer_index'])
             if selected<len(final_answers) and selected>=0:
                 break
         return selected
     def check_solve_query(self,query,final_answer:str)->bool:
-        return bool(self.call_openai_completions_with_function_call('check_solve_query',{'query':query,'final_answer':final_answer})['is_solved'])
+        return bool(self.function_call('check_solve_query',{'query':query,'final_answer':final_answer})['is_solved'])
     
     def compare_answer_details(self,answer:List)->List[int]:         
         parsed_answers = []
         
         for ans in answer:
-            parsed_ans = self.call_openai_completions_with_function_call('parse_answer_details',{'answer_details':ans['answer_details']})
+            parsed_ans = self.function_call('parse_answer_details',{'answer_details':ans['answer_details']})
             parsed_ans['total_steps'] = ans['total_steps']
             parsed_answers.append(parsed_ans)
 
@@ -135,16 +142,8 @@ class OpenAINormalizedEvaluator(ToolEvalEvaluator):
                 score += -5*math.log(ans['total_steps'])
             scores.append(score)
         # return index of highest score
-
-        highest_idx = [0]
-        highest_score = scores[0]
-        for idx in range(1,len(scores)):
-            score = scores[idx]
-            if score>highest_score:
-                highest_idx = [idx]
-                highest_score = score
-            else:
-                highest_idx.append(idx)             
+        highest_score = max(scores)
+        highest_idx = [idx for idx,score in enumerate(scores) if score==highest_score]         
         return random.choice(highest_idx)
     
     def normalized_openai_completions(self,task_description:Dict,answers:List[Dict[Any,Any]])->int:
@@ -175,16 +174,9 @@ class OpenAINormalizedEvaluator(ToolEvalEvaluator):
             
             # print(is_solved)
             if all_solved:
-                shortest = int(answers[0]['total_steps'])
-                ans_idxs = [0]
-                for idx in range(1,len(answers)):
-                    ans = answers[idx]
-                    if int(ans['total_steps'])<shortest:
-                        shortest = int(ans['total_steps'])
-                        ans_idxs = [idx]
-                    elif int(ans['total_steps'])==shortest:
-                        ans_idxs.append(idx)
-                # print(ans_idxs)
+                steps = [int(ans['total_steps']) for ans in answers]
+                shortest_steps = min(steps)
+                ans_idxs = [idx for idx,step in enumerate(steps) if step==shortest_steps]
                 # return only one idx
                 if len(ans_idxs)>1:
                     return ans_idxs[self.select_best_final_answer(
@@ -202,6 +194,3 @@ class OpenAINormalizedEvaluator(ToolEvalEvaluator):
             return self.compare_answer_details(answers)
         else:
             return random.choice([index for index,nonempty in enumerate(is_nonempty) if nonempty])
-        
-
-    
