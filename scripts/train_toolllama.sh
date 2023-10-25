@@ -1,8 +1,8 @@
 export PYTHONPATH=./
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=4,5
 
 torchrun --nproc_per_node=2 --master_port=20001 toolbench/train/train_long_seq.py \
-    --model_name_or_path huggyllama/llama-7b  \
+    --model_name_or_path /data/users/zhangjunlei/yangc/project/data/FastChat/save/weights/huggyllama/llama-7b  \
     --data_path  data/toolllama_G123_dfs_train.json \
     --eval_data_path  data/toolllama_G123_dfs_eval.json \
     --conv_template tool-llama-single-round \
